@@ -1,0 +1,14 @@
+#Goal
+int32 item_id
+string product_name
+string shelf_location
+int32 quantity
+string current_state
+---
+#Result
+bool success
+string message
+---
+#Feedback
+string current_step
+float32 progress

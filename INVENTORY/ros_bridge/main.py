@@ -1,3 +1,9 @@
+import os
+import django
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "main.settings")
+django.setup()
+
 import asyncio
 import threading
 
@@ -63,12 +69,28 @@ async def websocket_endpoint(websocket: WebSocket):
         websocket_manager.disconnect(websocket)
 
 
+def _get_restock_item_shelf_state(item_id: int) -> str:
+    from api.models import RestockItem
+
+    try:
+        restock_item = RestockItem.objects.get(id=item_id)
+        return restock_item.shelf_state or "unknown"
+    except RestockItem.DoesNotExist:
+        return "unknown"
+
+
 @app.post("/restock/queue")
 @app.post("/restock")
 async def start_restock(request: RestockRequest):
+    loop = asyncio.get_running_loop()
+    request.current_state = await loop.run_in_executor(
+        None, _get_restock_item_shelf_state, request.item_id
+    )
+
     result = await ros_bridge.send_restock_goal(request)
 
     return result
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=9000)
+    

@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import requests
 from celery import shared_task, chain, chord, group
+from celery.signals import task_revoked
 from django.db.models import F
 from django.utils import timezone
 
@@ -137,13 +138,22 @@ def queue_restock_task(
     self,
     product_id,
     current_stock,
-    priority=2,
+    priority=None,
+    shelf_state=None,
     shelf_location=None,
     explicit_quantity=None,
 ):
     """Queue a product restock and start the next queued mission if the system
     is idle."""
     try:
+        if priority is None and shelf_state is not None:
+            if shelf_state == "empty":
+                priority = 1
+            elif shelf_state == "partial":
+                priority = 2
+            else:
+                raise ValueError("Invalid shelf_state for restock queue")
+
         product = Product.objects.get(id=product_id)
 
         if not product.auto_restock_enabled:
@@ -186,6 +196,7 @@ def queue_restock_task(
             shelf_location=shelf_location or product.shelf_location or "Unknown",
             status="PENDING",
             priority=priority,
+            shelf_state=shelf_state,
         )
 
         EventBus.publish(
@@ -232,11 +243,21 @@ def camera_restock_task(
             raise ValueError("Invalid shelf state for camera restock")
 
         priority = 1 if shelf_state == "empty" else 2
+        workflow_label = "EMPTY_RESTOCK" if shelf_state == "empty" else "PARTIAL_RESTOCK"
+
+        logger.info(
+            "Camera restock task: product=%s shelf_state=%s workflow=%s priority=%s",
+            product_id,
+            shelf_state,
+            workflow_label,
+            priority,
+        )
 
         return queue_restock_task.delay(
             product_id=product_id,
             current_stock=current_stock,
             priority=priority,
+            shelf_state=shelf_state,
             shelf_location=shelf_location,
             explicit_quantity=explicit_quantity,
         )
@@ -256,6 +277,17 @@ def trigger_robot_mission_task(self, restock_data):
             restock_item_id = restock_data.get("restock_item_id")
 
         restock_item = RestockItem.objects.get(id=restock_item_id)
+
+        # Check if already completed to prevent re-execution on worker restart
+        if restock_item.status == "COMPLETED":
+            logger.info(f"Restock item {restock_item_id} already completed, skipping")
+            return {
+                "restock_item_id": restock_item.id,
+                "mission_started": True,
+                "status": "COMPLETED",
+                "skipped": True,
+            }
+
         product = restock_item.product
 
         # Status update
@@ -267,7 +299,8 @@ def trigger_robot_mission_task(self, restock_data):
             "item_id": restock_item.id,
             "product_name": product.name,
             "quantity": restock_item.quantity,
-            "shelf_location": product.shelf_location,
+            "shelf_location": restock_item.shelf_location,
+            "current_state": restock_item.shelf_state or "unknown",
         }
 
         try:
@@ -376,14 +409,39 @@ def process_restock_queue():
     return {"queued": True, "restock_item_id": next_item.id}
 
 
-# Task chaining (Sequential task execution)
-workflow_orchestration = queue_restock_task
-execute_restock_workflow = workflow_orchestration
+@task_revoked.connect
+def handle_task_revoked(sender=None, request=None, **kwargs):
+    """Handle task revocation by marking restock items as failed if in progress."""
+    if sender == trigger_robot_mission_task:
+        try:
+            restock_data = request.args[0] if request.args else None
+            if restock_data:
+                if isinstance(restock_data, int):
+                    restock_item_id = restock_data
+                else:
+                    restock_item_id = restock_data.get("restock_item_id")
+
+                restock_item = RestockItem.objects.get(id=restock_item_id)
+                if restock_item.status == "IN_PROGRESS":
+                    restock_item.status = "FAILED"
+                    restock_item.save(update_fields=["status"])
+                    logger.warning(f"Restock item {restock_item_id} marked as failed due to task revocation")
+
+                    EventBus.publish(
+                        "restock_mission_failed",
+                        {
+                            "restock_item_id": restock_item.id,
+                            "product_name": restock_item.product.name,
+                            "reason": "task_revoked",
+                        },
+                    )
+        except Exception as exc:
+            logger.error(f"Error handling task revocation: {exc}")
 
 
 # Task with callbacks
 @shared_task
-def workflow_with_callbacks(product_id, current_stock):
+def workflow_orchestration(product_id, current_stock):
     # Task execution with conditional branching based on results
     from api.celery_tasks import (
         validate_restock_task,

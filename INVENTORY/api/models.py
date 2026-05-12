@@ -116,6 +116,11 @@ class RestockItem(models.Model):
         COMPLETED = "COMPLETED"
         FAILED = "FAILED"
 
+    class ShelfState(models.TextChoices):
+        EMPTY = "empty", "EMPTY"
+        PARTIAL = "partial", "PARTIAL"
+        UNKNOWN = "unknown", "UNKNOWN"
+
     class Priority(models.IntegerChoices):
         FULL_EMPTY = 0, "FULL_EMPTY"
         PARTIAL_EMPTY = 1, "PARTIAL_EMPTY"
@@ -127,6 +132,12 @@ class RestockItem(models.Model):
         max_length=20, choices=Status.choices, default=Status.PENDING
     )
     shelf_location = models.CharField(max_length=100)
+    shelf_state = models.CharField(
+        max_length=20,
+        choices=ShelfState.choices,
+        blank=True,
+        null=True,
+    )
     priority = models.IntegerField(
         choices=Priority.choices,
         default=Priority.THRESHOLD,

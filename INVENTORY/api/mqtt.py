@@ -9,13 +9,13 @@ import paho.mqtt.client as mqtt
 
 logger = logging.getLogger(__name__)
 
-MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "172.28.199.106")
+MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "10.15.173.106")
 MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "shelf/status")
 MQTT_CLIENT_ID = os.environ.get("MQTT_CLIENT_ID", "inventory-mqtt-client")
 MQTT_KEEPALIVE = int(os.environ.get("MQTT_KEEPALIVE", "60"))
 
-#10.243.160.106
+#10.15.173.106
 class MQTTListener:
     """Controllable MQTT client for shelf status monitoring."""
 
@@ -24,6 +24,8 @@ class MQTTListener:
         self.thread: Optional[threading.Thread] = None
         self.running = False
         self.connected = False
+        self._shelf_state_lock = threading.Lock()
+        self._previous_shelf_states = {}  # Track previous states to detect transitions
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -59,6 +61,22 @@ class MQTTListener:
             logger.warning("MQTT disconnected unexpectedly with result code %s", rc)
         self.connected = False
 
+    def _should_create_restock_order(self, shelf_key, current_shelf_state):
+        """
+        Determine if a restock order should be created based on state transition.
+        Only create orders when transitioning from FILLED -> empty/partial (stock depletion).
+        This prevents ghost restocks.
+        """
+        with self._shelf_state_lock:
+            previous_state = self._previous_shelf_states.get(shelf_key, "")
+            self._previous_shelf_states[shelf_key] = current_shelf_state
+
+        # Only trigger restock if transitioning from FILLED to empty/partial
+        return (
+            previous_state == "filled"
+            and current_shelf_state in ("empty", "partial")
+        )
+
     def _normalize_shelf_state(self, raw_status):
         status = (raw_status or "").strip().lower()
         if not status:
@@ -67,7 +85,24 @@ class MQTTListener:
             return "empty"
         if "partial" in status or status.startswith("p"):
             return "partial"
-        return ""
+        return "filled"
+
+    def _should_create_restock_order(self, shelf_key, current_shelf_state):
+        """
+        Determine if a restock order should be created based on state transition.
+        Only create orders when transitioning from FILLED -> empty/partial (stock depletion).
+        This prevents ghost restocks.
+        """
+        with self._shelf_state_lock:
+            previous_state = self._previous_shelf_states.get(shelf_key, "")
+            self._previous_shelf_states[shelf_key] = current_shelf_state
+
+        # Only trigger restock if transitioning from FILLED to empty/partial
+        return (
+            previous_state == "filled"
+            and current_shelf_state in ("empty", "partial")
+        )
+
 
     def _on_message(self, client, userdata, message):
         try:
@@ -103,8 +138,18 @@ class MQTTListener:
                         if item_count is None:
                             item_count = 0 if shelf_state == "empty" else 1
 
-                        if shelf_state in ("empty", "partial"):
+                        # Create a unique key for tracking shelf state transitions
+                        shelf_key = f"product:{product_name}"
+                        should_create_order = self._should_create_restock_order(
+                            shelf_key, shelf_state
+                        )
+
+                        if should_create_order:
                             restock_quantity = 2 if shelf_state == "empty" else 1
+
+                            # Reflect missing stock immediately when sensor detects empty/partial shelf
+                            product.stock = max(0, product.stock - restock_quantity)
+                            product.save(update_fields=["stock"])
 
                             system_user, _ = User.objects.get_or_create(
                                 username="RECAP", defaults={"email": ""}
@@ -120,7 +165,7 @@ class MQTTListener:
 
                             logger.info(
                                 "Created restock order %s for product %s (%s) - "
-                                "quantity: %s (shelf_state=%s, item_count=%s)",
+                                "quantity: %s (shelf_state transition FILLED->%s, item_count=%s)",
                                 order.order_id,
                                 product.id,
                                 product_name,
@@ -138,10 +183,9 @@ class MQTTListener:
                             )
                         else:
                             logger.debug(
-                                "Skipping restock for product %s - status %s "
-                                "does not require restocking",
+                                "Skipping restock for product %s - state transition not FILLED->%s",
                                 product_name,
-                                raw_status,
+                                shelf_state,
                             )
                     except Product.DoesNotExist:
                         logger.warning("Product %s not found in database", product_name)
@@ -200,12 +244,8 @@ class MQTTListener:
                 if topic_parts and topic_parts[-1].isdigit():
                     product_id = int(topic_parts[-1])
 
-            if product_id is None or shelf_state not in ("empty", "partial"):
-                logger.debug(
-                    "MQTT message ignored: missing product_id or "
-                    "unsupported shelf_state %s",
-                    raw_shelf_state,
-                )
+            if product_id is None:
+                logger.debug("MQTT message ignored: missing product_id")
                 return
 
             try:
@@ -221,37 +261,55 @@ class MQTTListener:
                 from api.models import Product, Order, OrderItem, User
 
                 product = Product.objects.get(id=product_id)
-                restock_quantity = 2 if shelf_state == "empty" else 1
 
-                system_user, _ = User.objects.get_or_create(
-                    username="RECAP", defaults={"email": ""}
+                # Create a unique key for tracking shelf state transitions
+                shelf_key = f"product:{product_id}"
+                should_create_order = self._should_create_restock_order(
+                    shelf_key, shelf_state
                 )
 
-                order = Order(user=system_user, status=Order.StatusChoices.PENDING)
-                order._skip_mqtt_signal = True
-                order.save()
+                if should_create_order:
+                    restock_quantity = 2 if shelf_state == "empty" else 1
 
-                OrderItem.objects.create(
-                    order=order, product=product, quantity=restock_quantity
-                )
+                    # Reflect missing stock immediately when sensor detects empty/partial shelf
+                    product.stock = max(0, product.stock - restock_quantity)
+                    product.save(update_fields=["stock"])
 
-                logger.info(
-                    "Created restock order %s for product %s from MQTT topic %s "
-                    "(shelf_state=%s, stock=%s)",
-                    order.order_id,
-                    product_id,
-                    message.topic,
-                    shelf_state,
-                    current_stock,
-                )
+                    system_user, _ = User.objects.get_or_create(
+                        username="RECAP", defaults={"email": ""}
+                    )
 
-                camera_restock_task.delay(
-                    product_id=product.id,
-                    shelf_state=shelf_state,
-                    current_stock=current_stock,
-                    explicit_quantity=restock_quantity,
-                    shelf_location=shelf_location or product.shelf_location or "Unknown",
-                )
+                    order = Order(user=system_user, status=Order.StatusChoices.PENDING)
+                    order._skip_mqtt_signal = True
+                    order.save()
+
+                    OrderItem.objects.create(
+                        order=order, product=product, quantity=restock_quantity
+                    )
+
+                    logger.info(
+                        "Created restock order %s for product %s from MQTT topic %s "
+                        "(shelf_state transition FILLED->%s, stock=%s)",
+                        order.order_id,
+                        product_id,
+                        message.topic,
+                        shelf_state,
+                        current_stock,
+                    )
+
+                    camera_restock_task.delay(
+                        product_id=product.id,
+                        shelf_state=shelf_state,
+                        current_stock=current_stock,
+                        explicit_quantity=restock_quantity,
+                        shelf_location=shelf_location or product.shelf_location or "Unknown",
+                    )
+                else:
+                    logger.debug(
+                        "Skipping restock for product %s - state transition not FILLED->%s",
+                        product_id,
+                        shelf_state,
+                    )
             except Product.DoesNotExist:
                 logger.warning("Product with ID %s not found in database", product_id)
             except Exception as exc:

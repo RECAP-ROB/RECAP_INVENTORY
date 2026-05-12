@@ -72,30 +72,31 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "main.wsgi.application"
+WSGI_APPLICATION = 'main.wsgi.application'
 
-ASGI_APPLICATION = "main.asgi.application"
+ASGI_APPLICATION = 'main.asgi.application'
 
 CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": ["redis://127.0.0.1:6379"],
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': ['redis://127.0.0.1:6379'],
         },
     }
 }
 
-CELERY_BROKER_URL = "redis://localhost:6379/0"
-CELERY_RESULT_BACKEND = "redis://localhost:6379/1"
-CELERY_IMPORTS = ("api.celery_tasks",)
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/1'
+CELERY_IMPORTS = ('api.celery_tasks',)
 
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "UTC"
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
 CELERY_ENABLE_UTC = True
+CELERY_ACKS_LATE = True
 
-MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "172.28.199.106")
+MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "10.15.173.106")
 MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "shelf/status")
 MQTT_CLIENT_ID = os.environ.get("MQTT_CLIENT_ID", "inventory-mqtt-client")
@@ -103,16 +104,14 @@ MQTT_KEEPALIVE = int(os.environ.get("MQTT_KEEPALIVE", "60"))
 
 # Task Execution settings
 CELERY_TASK_DEFAULT_PRIORITY = 5
-# Maximum of 1000 tasks per second
-CELERY_TASK_DEFAULT_RATE_LIMIT = "1000/s"
-# Ability to track the task when it starts
-CELERY_TASK_TRACK_STARTED = True
-CELERY_TASK_TIME_LIMIT = 30 * 60  # Hard timeout: (30 minutes)
-CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # Soft timeout:(25 minutes)
+CELERY_TASK_DEFAULT_RATE_LIMIT = '1000/s' # Maximum of 1000 tasks per second
+CELERY_TASK_TRACK_STARTED = True # Ability to track the task when it starts
+CELERY_TASK_TIME_LIMIT = 30 * 60 # Hard timeout: (30 minutes)
+CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60 # Soft timeout:(25 minutes)
 
-# Celery Worker settings
-CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Prefetch 1 task at a time
-CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000  # Prevent memory leaks
+#Celery Worker settings
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1 # Prefetch 1 task at a time
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000 #Prevent memory leaks
 
 # Broker settings
 CELERY_BROKER_TRANSPORT_OPTIONS = {

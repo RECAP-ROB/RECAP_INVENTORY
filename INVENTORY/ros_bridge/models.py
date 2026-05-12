@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel
 
 
@@ -6,3 +8,4 @@ class RestockRequest(BaseModel):
     product_name: str
     quantity: int
     shelf_location: str
+    current_state: Optional[str] = "unknown"

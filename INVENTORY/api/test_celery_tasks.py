@@ -7,6 +7,7 @@ from api.serializers import OrderCreateSerializer
 from api.celery_tasks import (
     validate_restock_task,
     create_restock_item_task,
+    camera_restock_task,
     trigger_robot_mission_task,
 )
 
@@ -79,6 +80,63 @@ class CreateRestockItemTaskTest(TestCase):
         restock = RestockItem.objects.get(id=result.result["restock_item_id"])
         self.assertEqual(restock.quantity, 8)
         self.assertEqual(restock.status, "PENDING")
+
+
+class CameraRestockTaskTest(TestCase):
+    def setUp(self):
+        self.product = Product.objects.create(
+            name="Camera Product",
+            description="Test",
+            price=9.99,
+            stock=2,
+            auto_restock_enabled=True,
+            restock_quantity=2,
+            shelf_location="SHELF-A2",
+        )
+
+    def _unwrap_result(self, result):
+        task_result = result.result
+        if hasattr(task_result, "result"):
+            task_result = task_result.result
+        return task_result
+
+    @patch("api.celery_tasks.process_restock_queue.delay")
+    def test_camera_restock_empty_priority(self, mock_process_delay):
+        result = camera_restock_task.delay(
+            self.product.id,
+            shelf_state="empty",
+            current_stock=0,
+            explicit_quantity=2,
+            shelf_location="SHELF-A2",
+        )
+
+        self.assertTrue(result.successful())
+        task_result = self._unwrap_result(result)
+        self.assertEqual(task_result["priority"], 1)
+        mock_process_delay.assert_called_once()
+
+        restock = RestockItem.objects.get(id=task_result["restock_item_id"])
+        self.assertEqual(restock.priority, 1)
+        self.assertEqual(restock.quantity, 2)
+
+    @patch("api.celery_tasks.process_restock_queue.delay")
+    def test_camera_restock_partial_priority(self, mock_process_delay):
+        result = camera_restock_task.delay(
+            self.product.id,
+            shelf_state="partial",
+            current_stock=1,
+            explicit_quantity=1,
+            shelf_location="SHELF-A2",
+        )
+
+        self.assertTrue(result.successful())
+        task_result = self._unwrap_result(result)
+        self.assertEqual(task_result["priority"], 2)
+        mock_process_delay.assert_called_once()
+
+        restock = RestockItem.objects.get(id=task_result["restock_item_id"])
+        self.assertEqual(restock.priority, 2)
+        self.assertEqual(restock.quantity, 1)
 
 
 class TriggerRobotMissionTaskTest(TestCase):

@@ -159,13 +159,44 @@ CELERY_BEAT_SCHEDULE = {
 
 # Database
 # https://docs.djangoproject.com/en/4.0/ref/settings/#databases
+# Support either SQLite (default) or PostgreSQL via environment variables.
+if os.environ.get("DATABASE_URL"):
+    # Parse DATABASE_URL if provided (e.g. postgres://user:pass@host:port/dbname)
+    from urllib.parse import urlparse
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+    url = urlparse(os.environ["DATABASE_URL"])
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": url.path[1:],
+            "USER": url.username or "",
+            "PASSWORD": url.password or "",
+            "HOST": url.hostname or "",
+            "PORT": url.port or "",
+            "CONN_MAX_AGE": int(os.environ.get("CONN_MAX_AGE", 600)),
+        }
     }
-}
+elif os.environ.get("POSTGRES_DB"):
+    # Individual Postgres environment variables
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("POSTGRES_DB", "recap"),
+            "USER": os.environ.get("POSTGRES_USER", "recap"),
+            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "recap_pass"),
+            "HOST": os.environ.get("POSTGRES_HOST", "127.0.0.1"),
+            "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+            "CONN_MAX_AGE": int(os.environ.get("CONN_MAX_AGE", 600)),
+        }
+    }
+else:
+    # Default: SQLite for quick local/dev usage
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 
 
 # Password validation
